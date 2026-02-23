@@ -22,7 +22,10 @@ pub use mouse_movement::handle_simulate_mouse_movement;
 pub use ping::handle_ping;
 pub use take_screenshot::handle_take_screenshot;
 pub use text_input::handle_simulate_text_input;
-pub use webview::{handle_get_dom, handle_get_element_position, handle_send_text_to_element};
+pub use webview::{
+    handle_get_dom, handle_get_element_position, handle_get_page_map, handle_send_text_to_element,
+    handle_get_page_state, handle_navigate_back, handle_scroll_page, handle_fill_form, handle_wait_for,
+};
 pub use window_manager::handle_manage_window;
 
 /// Handle command routing for socket requests
@@ -50,10 +53,17 @@ pub async fn handle_command<R: Runtime>(
         commands::SIMULATE_MOUSE_MOVEMENT => handle_simulate_mouse_movement(app, payload).await,
         commands::GET_ELEMENT_POSITION => handle_get_element_position(app, payload).await,
         commands::SEND_TEXT_TO_ELEMENT => handle_send_text_to_element(app, payload).await,
+        commands::GET_PAGE_MAP => handle_get_page_map(app, payload).await,
+        commands::GET_PAGE_STATE => handle_get_page_state(app, payload).await,
+        commands::NAVIGATE_BACK => handle_navigate_back(app, payload).await,
+        commands::SCROLL_PAGE => handle_scroll_page(app, payload).await,
+        commands::FILL_FORM => handle_fill_form(app, payload).await,
+        commands::WAIT_FOR => handle_wait_for(app, payload).await,
         _ => Ok(SocketResponse {
             success: false,
             data: None,
             error: Some(format!("Unknown command: {}", command)),
+            id: None,
         }),
     };
 

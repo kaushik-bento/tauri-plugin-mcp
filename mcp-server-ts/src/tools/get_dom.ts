@@ -5,7 +5,7 @@ import { socketClient } from "./client.js";
 export function registerGetDomTool(server: McpServer) {
   server.tool(
     "get_dom",
-    "Retrieves the full HTML Document Object Model (DOM) content from the specified application window as a string. This tool is read-only and provides a snapshot of the window's current HTML structure. Useful for parsing, analysis, or data extraction.",
+    "Retrieves the full raw HTML DOM from the specified window as a string. Warning: returns the complete HTML which can be very large (100K+ tokens). Prefer get_page_map for structured, token-efficient element data with numbered refs. Use get_dom only when you need the full HTML structure (e.g., for CSS analysis or custom parsing).",
     {
       window_label: z.string().default("main").describe("The identifier (e.g., visible title or internal label) of the application window from which to retrieve the DOM content. Defaults to 'main' if not specified."),
     },

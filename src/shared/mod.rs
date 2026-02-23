@@ -136,4 +136,10 @@ pub mod commands {
     pub const SIMULATE_MOUSE_MOVEMENT: &str = "simulate_mouse_movement";
     pub const GET_ELEMENT_POSITION: &str = "get_element_position";
     pub const SEND_TEXT_TO_ELEMENT: &str = "send_text_to_element";
+    pub const GET_PAGE_MAP: &str = "get_page_map";
+    pub const GET_PAGE_STATE: &str = "get_page_state";
+    pub const NAVIGATE_BACK: &str = "navigate_back";
+    pub const SCROLL_PAGE: &str = "scroll_page";
+    pub const FILL_FORM: &str = "fill_form";
+    pub const WAIT_FOR: &str = "wait_for";
 }

@@ -13,17 +13,17 @@ ${clickInfo}`;
 export function registerGetElementPositionTool(server: McpServer) {
   server.tool(
     "get_element_position",
-    "Finds an HTML element on the page by ID, class, tag name, or text content, and returns its raw position coordinates for use with mouse_movement. Can optionally click the element.",
+    "Finds an HTML element and returns its position coordinates for use with simulate_mouse_movement. Use selector_type 'ref' with a ref number from get_page_map for the most reliable element targeting. Can optionally click the element (note: clicking is a side-effect that modifies page state). When should_click is false (default), this tool is read-only.",
     {
-      selector_type: z.enum(["id", "class", "tag", "text"]).describe("The type of selector to use: 'id', 'class', 'tag', or 'text'."),
-      selector_value: z.string().describe("The value to search for based on the selector type."),
-      window_label: z.string().default("main").describe("The identifier of the application window to search in. Defaults to 'main' if not specified."),
-      should_click: z.boolean().default(false).describe("Whether to click the element once found. Default is false."),
+      selector_type: z.enum(["ref", "id", "class", "tag", "text"]).describe("The type of selector to use. 'ref' uses a numbered reference from get_page_map (most reliable)."),
+      selector_value: z.string().describe("The value to search for based on the selector type. For 'ref', provide the ref number as a string."),
+      window_label: z.string().default("main").describe("The identifier of the application window to search in. Defaults to 'main'."),
+      should_click: z.boolean().default(false).describe("Whether to click the element once found. Default is false (read-only)."),
     },
     {
       title: "Find Element and Get Position",
-      readOnlyHint: false, // Might be false since it could click
-      destructiveHint: true, // Potentially destructive since it might click
+      readOnlyHint: true,
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
     },

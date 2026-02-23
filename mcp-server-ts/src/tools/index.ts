@@ -8,6 +8,12 @@ import { registerTextInputTool } from "./text_input.js";
 import { registerMouseMovementTool } from "./mouse_movement.js";
 import { registerGetElementPositionTool } from "./get_element_position.js";
 import { registerSendTextToElementTool } from "./send_text_to_element.js";
+import { registerGetPageMapTool } from "./get_page_map.js";
+import { registerGetPageStateTool } from "./get_page_state.js";
+import { registerNavigateBackTool } from "./navigate_back.js";
+import { registerScrollPageTool } from "./scroll_page.js";
+import { registerFillFormTool } from "./fill_form.js";
+import { registerWaitForTool } from "./wait_for.js";
 import { socketClient } from "./client.js";
 
 // Re-export the socket client for direct use
@@ -24,6 +30,12 @@ export function registerAllTools(server: McpServer) {
   registerMouseMovementTool(server);
   registerGetElementPositionTool(server);
   registerSendTextToElementTool(server);
+  registerGetPageMapTool(server);
+  registerGetPageStateTool(server);
+  registerNavigateBackTool(server);
+  registerScrollPageTool(server);
+  registerFillFormTool(server);
+  registerWaitForTool(server);
 }
 
 // Function to initialize socket connection (can be awaited before registering tools)

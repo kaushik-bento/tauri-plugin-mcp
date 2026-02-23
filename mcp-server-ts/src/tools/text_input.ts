@@ -5,7 +5,7 @@ import { socketClient } from "./client.js";
 export function registerTextInputTool(server: McpServer) {
   server.tool(
     "simulate_text_input",
-    "Simulates keyboard input, typing the specified text content character by character into the currently focused input field or application element. Allows configuration of typing speed via inter-keystroke delay and initial delay. This action modifies the content of the target input field.",
+    "Types text character-by-character into whatever element currently has focus. Use this when you have already focused an element (e.g., via get_element_position with should_click=true) and just need to type. To target a specific element by selector or ref, use send_text_to_element instead.",
     {
       text: z.string().describe("Required. The string of text content to be typed out by the simulated keyboard input."),
       delay_ms: z.number().int().nonnegative().optional().describe("The delay in milliseconds between each simulated keystroke. Adjusts the typing speed."),

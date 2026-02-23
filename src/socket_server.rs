@@ -9,7 +9,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Runtime};
-use log::{info, error};
+use log::{info, error, trace};
 
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +30,7 @@ impl<S: Write + Read> LoggingStream<S> {
 
 impl<S: Write + Read> Write for LoggingStream<S> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        info!("[TAURI_MCP] Writing: {}", String::from_utf8_lossy(buf));
+        trace!("[TAURI_MCP] Writing: {}", String::from_utf8_lossy(buf));
         self.inner.write(buf)
     }
 
@@ -42,7 +42,7 @@ impl<S: Write + Read> Write for LoggingStream<S> {
 impl<S: Write + Read> Read for LoggingStream<S> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
-        info!(
+        trace!(
             "[TAURI_MCP] Read: {}",
             String::from_utf8_lossy(&buf[..n])
         );
@@ -55,6 +55,10 @@ impl<S: Write + Read> Read for LoggingStream<S> {
 struct SocketRequest {
     command: String,
     payload: Value,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    auth_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -63,6 +67,8 @@ pub struct SocketResponse {
     pub success: bool,
     pub data: Option<Value>,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 /// Unified stream type that can handle both IPC and TCP
@@ -116,10 +122,11 @@ pub struct SocketServer<R: Runtime> {
     socket_type: SocketType,
     app: AppHandle<R>,
     running: Arc<Mutex<bool>>,
+    auth_token: Option<String>,
 }
 
 impl<R: Runtime> SocketServer<R> {
-    pub fn new(app: AppHandle<R>, socket_type: SocketType) -> Self {
+    pub fn new(app: AppHandle<R>, socket_type: SocketType, auth_token: Option<String>) -> Self {
         match &socket_type {
             SocketType::Ipc { path } => {
                 let socket_path = if let Some(path) = path {
@@ -149,6 +156,7 @@ impl<R: Runtime> SocketServer<R> {
             socket_type,
             app,
             running: Arc::new(Mutex::new(false)),
+            auth_token,
         }
     }
 
@@ -188,12 +196,34 @@ impl<R: Runtime> SocketServer<R> {
         let listener = Arc::new(Mutex::new(listener));
         self.listener = Some(listener.clone());
 
+        // Write auth token to a file so the MCP server can read it
+        if let Some(ref token) = self.auth_token {
+            let token_path = match &self.socket_type {
+                SocketType::Ipc { path } => {
+                    let socket_path = path.clone().unwrap_or_else(|| {
+                        std::env::temp_dir().join("tauri-mcp.sock")
+                    });
+                    format!("{}.token", socket_path.display())
+                }
+                SocketType::Tcp { port, .. } => {
+                    format!("{}/tauri-mcp-{}.token", std::env::temp_dir().display(), port)
+                }
+            };
+            if let Err(e) = std::fs::write(&token_path, token) {
+                error!("[TAURI_MCP] Failed to write auth token file {}: {}", token_path, e);
+            } else {
+                info!("[TAURI_MCP] Auth token written to {}", token_path);
+            }
+        }
+
         *self.running.lock().unwrap() = true;
         info!("[TAURI_MCP] Set running flag to true");
 
         let app = self.app.clone();
         let running = self.running.clone();
         let socket_type = self.socket_type.clone();
+        let rt_handle = tokio::runtime::Handle::current();
+        let auth_token: Option<Arc<str>> = self.auth_token.as_deref().map(Into::into);
 
         // Spawn a thread to handle socket connections
         info!("[TAURI_MCP] Spawning listener thread");
@@ -206,29 +236,6 @@ impl<R: Runtime> SocketServer<R> {
                     info!("[TAURI_MCP] Listener thread started for TCP socket at {}:{}", host, port);
                 }
             }
-
-            // Set panic handler to suppress specific Windows named pipe errors
-            let original_hook = std::panic::take_hook();
-            std::panic::set_hook(Box::new(move |panic_info| {
-                let panic_payload = panic_info.payload();
-                let is_pipe_error = if let Some(s) = panic_payload.downcast_ref::<String>() {
-                    s.contains("No process is on the other end of the pipe")
-                } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                    s.contains("No process is on the other end of the pipe")
-                } else {
-                    false
-                };
-
-                // If it's not the Windows pipe disconnection error, pass to the original handler
-                if !is_pipe_error {
-                    original_hook(panic_info);
-                } else {
-                    // Just log the error instead of panicking
-                    info!(
-                        "[TAURI_MCP] Handled pipe disconnection (normal client disconnect)"
-                    );
-                }
-            }));
 
             let listener_guard = listener.lock().unwrap();
 
@@ -249,42 +256,24 @@ impl<R: Runtime> SocketServer<R> {
                                 Ok(stream) => {
                                     info!("[TAURI_MCP] Accepted new IPC connection");
                                     let app_clone = app.clone();
+                                    let rt_handle_clone = rt_handle.clone();
+                                    let auth_token_clone = auth_token.clone();
                                     let unified_stream = UnifiedStream::Ipc(stream);
 
-                                    // Spawn a new thread with its own panic handler for client handling
                                     thread::spawn(move || {
-                                        // Set a similar panic handler for the client handler thread
-                                        let client_hook = std::panic::take_hook();
-                                        std::panic::set_hook(Box::new(move |panic_info| {
-                                            let panic_payload = panic_info.payload();
-                                            let is_pipe_error = if let Some(s) =
-                                                panic_payload.downcast_ref::<String>()
-                                            {
-                                                s.contains("No process is on the other end of the pipe")
-                                            } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                                                s.contains("No process is on the other end of the pipe")
-                                            } else {
-                                                false
-                                            };
-
-                                            if !is_pipe_error {
-                                                client_hook(panic_info);
-                                            } else {
-                                                info!(
-                                                    "[TAURI_MCP] Handled pipe disconnection in client thread"
-                                                );
+                                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                            if let Err(e) = handle_client(unified_stream, app_clone, rt_handle_clone, auth_token_clone) {
+                                                if e.to_string()
+                                                    .contains("No process is on the other end of the pipe")
+                                                {
+                                                    info!("[TAURI_MCP] Client disconnected normally");
+                                                } else {
+                                                    error!("[TAURI_MCP] Error handling client: {}", e);
+                                                }
                                             }
                                         }));
-
-                                        // Handle the client with error trapping
-                                        if let Err(e) = handle_client(unified_stream, app_clone) {
-                                            if e.to_string()
-                                                .contains("No process is on the other end of the pipe")
-                                            {
-                                                info!("[TAURI_MCP] Client disconnected normally");
-                                            } else {
-                                                error!("[TAURI_MCP] Error handling client: {}", e);
-                                            }
+                                        if let Err(panic) = result {
+                                            error!("[TAURI_MCP] Client handler panicked: {:?}", panic);
                                         }
                                     });
                                 }
@@ -312,7 +301,7 @@ impl<R: Runtime> SocketServer<R> {
                             }
 
                             match tcp_listener.accept() {
-                                Ok((mut stream, addr)) => {
+                                Ok((stream, addr)) => {
                                     info!("[TAURI_MCP] Accepted new TCP connection from: {}", addr);
                                     
                                     // Set the stream back to blocking mode for normal I/O operations
@@ -322,13 +311,18 @@ impl<R: Runtime> SocketServer<R> {
                                     }
                                     
                                     let app_clone = app.clone();
+                                    let rt_handle_clone = rt_handle.clone();
+                                    let auth_token_clone = auth_token.clone();
                                     let unified_stream = UnifiedStream::Tcp(stream);
 
-                                    // Spawn a new thread for client handling
                                     thread::spawn(move || {
-                                        // Handle the client with error trapping
-                                        if let Err(e) = handle_client(unified_stream, app_clone) {
-                                            error!("[TAURI_MCP] Error handling TCP client: {}", e);
+                                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                            if let Err(e) = handle_client(unified_stream, app_clone, rt_handle_clone, auth_token_clone) {
+                                                error!("[TAURI_MCP] Error handling TCP client: {}", e);
+                                            }
+                                        }));
+                                        if let Err(panic) = result {
+                                            error!("[TAURI_MCP] TCP client handler panicked: {:?}", panic);
                                         }
                                     });
                                 }
@@ -381,7 +375,7 @@ impl<R: Runtime> SocketServer<R> {
     }
 
     #[cfg(desktop)]
-    fn get_socket_name(&self, path: &Option<std::path::PathBuf>) -> Result<Name, Error> {
+    fn get_socket_name(&self, path: &Option<std::path::PathBuf>) -> Result<Name<'_>, Error> {
         let socket_path = if let Some(p) = path {
             p.to_string_lossy().to_string()
         } else {
@@ -404,13 +398,10 @@ impl<R: Runtime> SocketServer<R> {
     }
 }
 
-fn handle_client<R: Runtime>(stream: UnifiedStream, app: AppHandle<R>) -> crate::Result<()> {
+fn handle_client<R: Runtime>(stream: UnifiedStream, app: AppHandle<R>, rt_handle: tokio::runtime::Handle, auth_token: Option<Arc<str>>) -> crate::Result<()> {
     info!("[TAURI_MCP] Handling new client connection");
-    // Use tokio runtime to handle async functions
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| Error::Anyhow(format!("Failed to create runtime: {}", e)))?;
 
-    rt.block_on(async {
+    rt_handle.block_on(async {
         // Create a buffered reader and separate writer for the socket
         let stream_clone = match stream.try_clone() {
             Ok(clone) => clone,
@@ -468,6 +459,7 @@ fn handle_client<R: Runtime>(stream: UnifiedStream, app: AppHandle<R>) -> crate:
                     success: false,
                     data: None,
                     error: Some(error_msg),
+                    id: None,
                 };
 
                 let error_json = match serde_json::to_string(&error_response) {
@@ -496,10 +488,41 @@ fn handle_client<R: Runtime>(stream: UnifiedStream, app: AppHandle<R>) -> crate:
             }
         };
 
+        // Validate auth token if configured
+        if let Some(ref expected_token) = auth_token {
+            match &request.auth_token {
+                Some(provided_token) if provided_token == expected_token.as_ref() => {
+                    // Token matches, proceed
+                }
+                _ => {
+                    let request_id = request.id.clone();
+                    let mut error_response = SocketResponse {
+                        success: false,
+                        data: None,
+                        error: Some("Authentication failed: invalid or missing auth token".to_string()),
+                        id: None,
+                    };
+                    error_response.id = request_id;
+                    let error_json = serde_json::to_string(&error_response)
+                        .map_err(|e| Error::Anyhow(format!("Failed to serialize auth error: {}", e)))?
+                        + "\n";
+                    writer.write_all(error_json.as_bytes())
+                        .map_err(|e| Error::Io(format!("Error writing auth error: {}", e)))?;
+                    writer.flush()
+                        .map_err(|e| Error::Io(format!("Error flushing auth error: {}", e)))?;
+                    line.clear();
+                    continue;
+                }
+            }
+        }
+
         info!("[TAURI_MCP] Processing command: {}", request.command);
 
+        // Capture request ID for response correlation
+        let request_id = request.id.clone();
+
         // Use the centralized command handler from tools module
-        let response = match tools::handle_command(&app, &request.command, request.payload).await {
+        let mut response = match tools::handle_command(&app, &request.command, request.payload).await {
             Ok(resp) => resp,
             Err(e) => {
                 // Convert the error into a response structure
@@ -508,9 +531,13 @@ fn handle_client<R: Runtime>(stream: UnifiedStream, app: AppHandle<R>) -> crate:
                     success: false,
                     data: None,
                     error: Some(e.to_string()),
+                    id: None,
                 }
             }
         };
+
+        // Correlate response with request ID
+        response.id = request_id;
 
         // When writing the response, handle pipe errors gracefully
         let response_json = serde_json::to_string(&response)

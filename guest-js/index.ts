@@ -3,20 +3,39 @@ import { getCurrentWebviewWindow, WebviewWindow } from '@tauri-apps/api/webviewW
 
 // Track the unlisten functions for cleanup
 let domContentUnlistenFunction: (() => void) | null = null;
+let pageMapUnlistenFunction: (() => void) | null = null;
 let localStorageUnlistenFunction: (() => void) | null = null;
 let jsExecutionUnlistenFunction: (() => void) | null = null;
 let elementPositionUnlistenFunction: (() => void) | null = null;
 let sendTextToElementUnlistenFunction: (() => void) | null = null;
+let getPageStateUnlistenFunction: (() => void) | null = null;
+let navigateBackUnlistenFunction: (() => void) | null = null;
+let scrollPageUnlistenFunction: (() => void) | null = null;
+let fillFormUnlistenFunction: (() => void) | null = null;
+let waitForUnlistenFunction: (() => void) | null = null;
+
+// Global ref map: stores numbered references to interactive elements from the last getPageMap call
+let _pageMapRefElements: Map<number, Element> = new Map();
+
+// Delta tracking: fingerprint → { ref, props } from the previous getPageMap(delta:true) call
+let _previousPageMapFingerprints: Map<string, { ref: number; props: PageMapElement }> = new Map();
+let _previousPageMapMaxRef: number = 0;
 
 export async function setupPluginListeners() { 
     const currentWindow: WebviewWindow = getCurrentWebviewWindow();
     domContentUnlistenFunction = await currentWindow.listen('got-dom-content', handleDomContentRequest);
+    pageMapUnlistenFunction = await currentWindow.listen('get-page-map', handleGetPageMapRequest);
     localStorageUnlistenFunction = await currentWindow.listen('get-local-storage', handleLocalStorageRequest);
     jsExecutionUnlistenFunction = await currentWindow.listen('execute-js', handleJsExecutionRequest);
     elementPositionUnlistenFunction = await currentWindow.listen('get-element-position', handleGetElementPositionRequest);
     sendTextToElementUnlistenFunction = await currentWindow.listen('send-text-to-element', handleSendTextToElementRequest);
-    
-    console.log('TAURI-PLUGIN-MCP: Event listeners for "got-dom-content", "get-local-storage", "execute-js", "get-element-position", and "send-text-to-element" are set up on the current window.');
+    getPageStateUnlistenFunction = await currentWindow.listen('get-page-state', handleGetPageStateRequest);
+    navigateBackUnlistenFunction = await currentWindow.listen('navigate-back', handleNavigateBackRequest);
+    scrollPageUnlistenFunction = await currentWindow.listen('scroll-page', handleScrollPageRequest);
+    fillFormUnlistenFunction = await currentWindow.listen('fill-form', handleFillFormRequest);
+    waitForUnlistenFunction = await currentWindow.listen('wait-for', handleWaitForRequest);
+
+    console.log('TAURI-PLUGIN-MCP: All event listeners are set up on the current window.');
 }
 
 export async function cleanupPluginListeners() {
@@ -26,6 +45,12 @@ export async function cleanupPluginListeners() {
         console.log('TAURI-PLUGIN-MCP: Event listener for "got-dom-content" has been removed.');
     }
     
+    if (pageMapUnlistenFunction) {
+        pageMapUnlistenFunction();
+        pageMapUnlistenFunction = null;
+        console.log('TAURI-PLUGIN-MCP: Event listener for "get-page-map" has been removed.');
+    }
+
     if (localStorageUnlistenFunction) {
         localStorageUnlistenFunction();
         localStorageUnlistenFunction = null;
@@ -47,21 +72,49 @@ export async function cleanupPluginListeners() {
     if (sendTextToElementUnlistenFunction) {
         sendTextToElementUnlistenFunction();
         sendTextToElementUnlistenFunction = null;
-        console.log('TAURI-PLUGIN-MCP: Event listener for "send-text-to-element" has been removed.');
     }
+    if (getPageStateUnlistenFunction) {
+        getPageStateUnlistenFunction();
+        getPageStateUnlistenFunction = null;
+    }
+    if (navigateBackUnlistenFunction) {
+        navigateBackUnlistenFunction();
+        navigateBackUnlistenFunction = null;
+    }
+    if (scrollPageUnlistenFunction) {
+        scrollPageUnlistenFunction();
+        scrollPageUnlistenFunction = null;
+    }
+    if (fillFormUnlistenFunction) {
+        fillFormUnlistenFunction();
+        fillFormUnlistenFunction = null;
+    }
+    if (waitForUnlistenFunction) {
+        waitForUnlistenFunction();
+        waitForUnlistenFunction = null;
+    }
+    console.log('TAURI-PLUGIN-MCP: All event listeners have been removed.');
 }
 
 async function handleGetElementPositionRequest(event: any) {
     console.log('TAURI-PLUGIN-MCP: Received get-element-position, payload:', event.payload);
-    
+
     try {
         const { selectorType, selectorValue, shouldClick = false } = event.payload;
-        
+
         // Find the element based on the selector type
         let element = null;
         let debugInfo = [];
-        
+
         switch (selectorType) {
+            case 'ref':
+                // Look up by numbered reference from get_page_map
+                const refNum = parseInt(selectorValue, 10);
+                element = getElementByRef(refNum);
+                if (!element) {
+                    debugInfo.push(`No element found with ref=${refNum}. Call get_page_map first to populate refs.`);
+                }
+                break;
             case 'id':
                 element = document.getElementById(selectorValue);
                 if (!element) {
@@ -96,20 +149,20 @@ async function handleGetElementPositionRequest(event: any) {
                     // Check if any element contains part of the text (for debugging)
                     const containingElements = Array.from(document.querySelectorAll('*'))
                         .filter(el => el.textContent && el.textContent.includes(selectorValue));
-                    
+
                     if (containingElements.length > 0) {
                         debugInfo.push(`Found ${containingElements.length} elements containing part of the text.`);
                         debugInfo.push(`First element with partial match: ${containingElements[0].tagName}, text="${containingElements[0].textContent?.trim()}"`);
                     }
-                    
+
                     // Check for similar inputs
                     const inputs = Array.from(document.querySelectorAll('input, textarea'));
                     const inputsWithSimilarPlaceholders = inputs
-                        .filter(input => 
-                            (input as HTMLInputElement).placeholder && 
+                        .filter(input =>
+                            (input as HTMLInputElement).placeholder &&
                             (input as HTMLInputElement).placeholder.includes(selectorValue)
                         );
-                        
+
                     if (inputsWithSimilarPlaceholders.length > 0) {
                         debugInfo.push(`Found ${inputsWithSimilarPlaceholders.length} input elements with similar placeholders.`);
                         const firstMatch = inputsWithSimilarPlaceholders[0] as HTMLInputElement;
@@ -336,6 +389,418 @@ function getDomContent(): string {
     return '';
 }
 
+// --- Page Map (smart DOM serializer) ---
+
+interface PageMapElement {
+    ref: number;
+    tag: string;
+    type?: string;
+    text?: string;
+    placeholder?: string;
+    ariaLabel?: string;
+    role?: string;
+    href?: string;
+    name?: string;
+    id?: string;
+    value?: string;
+    checked?: boolean;
+    disabled?: boolean;
+    options?: string[];
+}
+
+interface PageMapOptions {
+    includeContent?: boolean;
+    interactiveOnly?: boolean;
+    scopeSelector?: string | string[];
+    maxDepth?: number;
+    delta?: boolean;
+    waitForStable?: boolean;
+    quietMs?: number;
+    maxWaitMs?: number;
+}
+
+interface PageMapDelta {
+    added: number[];
+    removed: number[];
+    changed: number[];
+}
+
+interface PageMapResult {
+    url: string;
+    title: string;
+    viewport: { width: number; height: number };
+    elements: PageMapElement[];
+    content: string;
+    scope?: string | string[];
+    maxDepth?: number;
+    delta?: PageMapDelta;
+}
+
+// Wait for DOM mutations to settle (no changes for `quietMs` milliseconds)
+function waitForDomStable(quietMs: number = 300, maxWaitMs: number = 3000): Promise<void> {
+    return new Promise((resolve) => {
+        let timer: ReturnType<typeof setTimeout>;
+        const timeout = setTimeout(() => {
+            observer.disconnect();
+            resolve();
+        }, maxWaitMs);
+
+        const observer = new MutationObserver(() => {
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+                observer.disconnect();
+                clearTimeout(timeout);
+                resolve();
+            }, quietMs);
+        });
+
+        observer.observe(document.body || document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            characterData: true,
+        });
+
+        // If no mutations happen at all, resolve after quietMs
+        timer = setTimeout(() => {
+            observer.disconnect();
+            clearTimeout(timeout);
+            resolve();
+        }, quietMs);
+    });
+}
+
+async function handleGetPageMapRequest(event: any) {
+    console.log('TAURI-PLUGIN-MCP: Received get-page-map, payload:', event.payload);
+
+    try {
+        const options = typeof event.payload === 'object' ? event.payload : {};
+
+        // If wait_for_stable is requested, wait for DOM to settle first
+        if (options.waitForStable) {
+            const quietMs = typeof options.quietMs === 'number' ? options.quietMs : 300;
+            const maxWaitMs = typeof options.maxWaitMs === 'number' ? options.maxWaitMs : 3000;
+            console.log(`TAURI-PLUGIN-MCP: Waiting for DOM to stabilize (quiet=${quietMs}ms, max=${maxWaitMs}ms)`);
+            await waitForDomStable(quietMs, maxWaitMs);
+        }
+
+        const result = getPageMap(options);
+        await emit('get-page-map-response', JSON.stringify(result));
+        console.log('TAURI-PLUGIN-MCP: Emitted get-page-map-response');
+    } catch (error) {
+        console.error('TAURI-PLUGIN-MCP: Error handling get-page-map request', error);
+        await emit('get-page-map-response', JSON.stringify({
+            url: window.location.href,
+            title: document.title,
+            viewport: { width: window.innerWidth, height: window.innerHeight },
+            elements: [],
+            content: '',
+            error: error instanceof Error ? error.message : String(error)
+        })).catch(e =>
+            console.error('TAURI-PLUGIN-MCP: Error emitting error response', e)
+        );
+    }
+}
+
+const NOISE_TAGS = new Set([
+    'SCRIPT', 'STYLE', 'NOSCRIPT', 'LINK', 'META', 'HEAD', 'BR', 'HR',
+    'IFRAME', 'OBJECT', 'EMBED', 'TEMPLATE', 'SLOT'
+]);
+
+const INTERACTIVE_TAGS = new Set([
+    'A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'DETAILS', 'SUMMARY'
+]);
+
+const INTERACTIVE_ROLES = new Set([
+    'button', 'link', 'textbox', 'checkbox', 'radio', 'switch', 'slider',
+    'spinbutton', 'combobox', 'listbox', 'option', 'menuitem', 'tab',
+    'searchbox'
+]);
+
+function isElementVisible(el: Element): boolean {
+    if (!(el instanceof HTMLElement)) return true;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    return true;
+}
+
+function isInteractive(el: Element): boolean {
+    if (INTERACTIVE_TAGS.has(el.tagName)) return true;
+    const role = el.getAttribute('role');
+    if (role && INTERACTIVE_ROLES.has(role)) return true;
+    if (el instanceof HTMLElement && el.isContentEditable) return true;
+    if (el.getAttribute('tabindex') !== null && el.getAttribute('tabindex') !== '-1') return true;
+    if (el.getAttribute('onclick') || el.getAttribute('ng-click') || el.getAttribute('@click')) return true;
+    return false;
+}
+
+function getElementText(el: Element): string {
+    // For inputs, return value or placeholder
+    if (el instanceof HTMLInputElement) {
+        return el.value || el.placeholder || '';
+    }
+    if (el instanceof HTMLTextAreaElement) {
+        return el.value || el.placeholder || '';
+    }
+    // For selects, return selected option text
+    if (el instanceof HTMLSelectElement) {
+        return el.options[el.selectedIndex]?.text || '';
+    }
+    // For other elements, get direct text (not children's text)
+    let text = '';
+    for (const node of el.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE) {
+            text += node.textContent || '';
+        }
+    }
+    text = text.trim();
+    // If no direct text, fall back to aria-label or title
+    if (!text) {
+        text = el.getAttribute('aria-label') || el.getAttribute('title') || '';
+    }
+    // Truncate long text
+    if (text.length > 100) {
+        text = text.substring(0, 97) + '...';
+    }
+    return text;
+}
+
+// Compute a stable fingerprint for an element to identify it across delta calls
+function elementFingerprint(el: Element): string {
+    const tag = el.tagName.toLowerCase();
+    const id = el.id || '';
+    const name = (el as HTMLInputElement).name || '';
+    const type = (el as HTMLInputElement).type || '';
+    const href = (el as HTMLAnchorElement).href || '';
+    return `${tag}|${id}|${name}|${type}|${href}`;
+}
+
+function getPageMap(options?: PageMapOptions): PageMapResult {
+    const interactiveOnly = options?.interactiveOnly === true;
+    const includeContent = interactiveOnly ? false : (options?.includeContent !== false);
+    const maxDepth = typeof options?.maxDepth === 'number' ? options.maxDepth : Infinity;
+    const isDelta = options?.delta === true;
+    const scopeSelector = options?.scopeSelector;
+
+    // Clear previous ref map
+    _pageMapRefElements.clear();
+
+    const elements: PageMapElement[] = [];
+    // In delta mode, start refs above the previous max so new elements get high refs
+    let refCounter = isDelta ? _previousPageMapMaxRef + 1 : 1;
+    const contentParts: string[] = [];
+    const seenTexts = new Set<string>();
+
+    // Track fingerprints for this call (used by delta mode)
+    const currentFingerprints: Map<string, { ref: number; props: PageMapElement }> = new Map();
+
+    function assignRef(el: Element, entry: PageMapElement): number {
+        if (isDelta) {
+            const fp = elementFingerprint(el);
+            const prev = _previousPageMapFingerprints.get(fp);
+            if (prev) {
+                // Reuse the old ref for this fingerprint
+                entry.ref = prev.ref;
+                _pageMapRefElements.set(prev.ref, el);
+                currentFingerprints.set(fp, { ref: prev.ref, props: entry });
+                return prev.ref;
+            }
+        }
+        // New element (or non-delta mode): assign next ref
+        const ref = refCounter++;
+        entry.ref = ref;
+        _pageMapRefElements.set(ref, el);
+        if (isDelta) {
+            currentFingerprints.set(elementFingerprint(el), { ref, props: entry });
+        }
+        return ref;
+    }
+
+    function walkNode(node: Node, depth: number) {
+        // Depth guard: stop recursing deeper than maxDepth
+        if (depth > maxDepth) return;
+
+        if (node.nodeType === Node.TEXT_NODE) {
+            // In interactive-only mode, skip all text collection
+            if (interactiveOnly) return;
+            const text = (node.textContent || '').trim();
+            if (includeContent && text && !seenTexts.has(text)) {
+                seenTexts.add(text);
+                contentParts.push(text);
+            }
+            return;
+        }
+
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+        const el = node as Element;
+
+        // Skip noise tags
+        if (NOISE_TAGS.has(el.tagName)) return;
+
+        // Skip SVG internals (keep the top-level <svg> but skip its children)
+        if (el.tagName === 'SVG' || el.closest('svg')) {
+            // If this is the <svg> itself, check for aria-label
+            if (el.tagName === 'svg' || el.tagName === 'SVG') {
+                const label = el.getAttribute('aria-label');
+                if (label && isElementVisible(el)) {
+                    const entry: PageMapElement = {
+                        ref: 0,
+                        tag: 'svg',
+                        ariaLabel: label
+                    };
+                    assignRef(el, entry);
+                    elements.push(entry);
+                }
+            }
+            return;
+        }
+
+        // Skip hidden elements
+        if (!isElementVisible(el)) return;
+
+        // Check if interactive
+        if (isInteractive(el)) {
+            const entry: PageMapElement = {
+                ref: 0,
+                tag: el.tagName.toLowerCase(),
+            };
+
+            // Type for inputs
+            if (el instanceof HTMLInputElement) {
+                entry.type = el.type;
+                if (el.value) entry.value = el.value.substring(0, 100);
+                if (el.placeholder) entry.placeholder = el.placeholder;
+                if (el.name) entry.name = el.name;
+                if (el.type === 'checkbox' || el.type === 'radio') {
+                    entry.checked = el.checked;
+                }
+                if (el.disabled) entry.disabled = true;
+            } else if (el instanceof HTMLTextAreaElement) {
+                entry.type = 'textarea';
+                if (el.value) entry.value = el.value.substring(0, 100);
+                if (el.placeholder) entry.placeholder = el.placeholder;
+                if (el.name) entry.name = el.name;
+                if (el.disabled) entry.disabled = true;
+            } else if (el instanceof HTMLSelectElement) {
+                entry.type = 'select';
+                entry.options = Array.from(el.options).map(o => o.text).slice(0, 10);
+                if (el.name) entry.name = el.name;
+                if (el.disabled) entry.disabled = true;
+            } else if (el instanceof HTMLAnchorElement) {
+                entry.href = el.href;
+            }
+
+            const text = getElementText(el);
+            if (text) entry.text = text;
+
+            const ariaLabel = el.getAttribute('aria-label');
+            if (ariaLabel && ariaLabel !== text) entry.ariaLabel = ariaLabel;
+
+            const role = el.getAttribute('role');
+            if (role) entry.role = role;
+
+            if (el.id) entry.id = el.id;
+
+            assignRef(el, entry);
+            elements.push(entry);
+        }
+
+        // Walk children
+        for (const child of el.childNodes) {
+            walkNode(child, depth + 1);
+        }
+    }
+
+    // Scope-aware root selection
+    const roots: Element[] = [];
+    if (scopeSelector) {
+        const selectors = Array.isArray(scopeSelector) ? scopeSelector : [scopeSelector];
+        for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el) roots.push(el);
+        }
+    }
+    if (roots.length === 0) {
+        roots.push(document.body || document.documentElement);
+    }
+    for (const root of roots) {
+        walkNode(root, 0);
+    }
+
+    // Delta metadata
+    let deltaResult: PageMapDelta | undefined;
+    if (isDelta) {
+        const added: number[] = [];
+        const removed: number[] = [];
+        const changed: number[] = [];
+
+        // Find added & changed
+        for (const [fp, cur] of currentFingerprints) {
+            const prev = _previousPageMapFingerprints.get(fp);
+            if (!prev) {
+                added.push(cur.ref);
+            } else {
+                // Compare props (excluding ref) to detect changes
+                const curClone = { ...cur.props, ref: 0 };
+                const prevClone = { ...prev.props, ref: 0 };
+                if (JSON.stringify(curClone) !== JSON.stringify(prevClone)) {
+                    changed.push(cur.ref);
+                }
+            }
+        }
+
+        // Find removed (fingerprints in previous but not current)
+        for (const [fp, prev] of _previousPageMapFingerprints) {
+            if (!currentFingerprints.has(fp)) {
+                removed.push(prev.ref);
+            }
+        }
+
+        deltaResult = { added, removed, changed };
+
+        // Store current state for next delta call
+        _previousPageMapFingerprints = currentFingerprints;
+        _previousPageMapMaxRef = Math.max(refCounter - 1, ...elements.map(e => e.ref));
+    } else {
+        // Non-delta call: reset tracking state (clean slate)
+        _previousPageMapFingerprints = new Map();
+        _previousPageMapMaxRef = 0;
+    }
+
+    // Build compressed content string
+    let content = '';
+    if (includeContent) {
+        content = contentParts.join(' ').replace(/\s+/g, ' ').trim();
+        // Cap content to avoid huge payloads
+        if (content.length > 5000) {
+            content = content.substring(0, 4997) + '...';
+        }
+    }
+
+    const result: PageMapResult = {
+        url: window.location.href,
+        title: document.title,
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        elements,
+        content,
+    };
+
+    // Add optional metadata
+    if (scopeSelector) result.scope = scopeSelector;
+    if (typeof options?.maxDepth === 'number') result.maxDepth = options.maxDepth;
+    if (deltaResult) result.delta = deltaResult;
+
+    console.log(`TAURI-PLUGIN-MCP: Page map generated: ${elements.length} interactive elements, ${content.length} chars content`);
+    return result;
+}
+
+// Export the ref map lookup for use by other handlers
+function getElementByRef(ref: number): Element | null {
+    return _pageMapRefElements.get(ref) || null;
+}
+
 async function handleLocalStorageRequest(event: any) {
     console.log('TAURI-PLUGIN-MCP: Received get-local-storage, payload:', event.payload);
     
@@ -510,15 +975,23 @@ function executeJavaScript(code: string): any {
 
 async function handleSendTextToElementRequest(event: any) {
     console.log('TAURI-PLUGIN-MCP: Received send-text-to-element, payload:', event.payload);
-    
+
     try {
         const { selectorType, selectorValue, text, delayMs = 20 } = event.payload;
-        
+
         // Find the element based on the selector type
         let element = null;
         let debugInfo = [];
-        
+
         switch (selectorType) {
+            case 'ref':
+                // Look up by numbered reference from get_page_map
+                const refNum = parseInt(selectorValue, 10);
+                element = getElementByRef(refNum);
+                if (!element) {
+                    debugInfo.push(`No element found with ref=${refNum}. Call get_page_map first to populate refs.`);
+                }
+                break;
             case 'id':
                 element = document.getElementById(selectorValue);
                 if (!element) {
@@ -982,5 +1455,311 @@ async function typeIntoSlateEditor(element: HTMLElement, text: string, delayMs: 
         } catch (innerError) {
             console.error('TAURI-PLUGIN-MCP: Fallback for Slate editor failed:', innerError);
         }
+    }
+}
+
+// --- get_page_state handler ---
+async function handleGetPageStateRequest(event: any) {
+    console.log('TAURI-PLUGIN-MCP: Received get-page-state');
+    try {
+        await emit('get-page-state-response', JSON.stringify({
+            success: true,
+            data: {
+                url: window.location.href,
+                title: document.title,
+                readyState: document.readyState,
+                scrollPosition: { x: window.scrollX, y: window.scrollY },
+                viewport: { width: window.innerWidth, height: window.innerHeight }
+            }
+        }));
+    } catch (error) {
+        await emit('get-page-state-response', JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error)
+        }));
+    }
+}
+
+// --- navigate_back handler ---
+async function handleNavigateBackRequest(event: any) {
+    console.log('TAURI-PLUGIN-MCP: Received navigate-back, payload:', event.payload);
+    try {
+        const { direction, delta } = event.payload || {};
+
+        if (typeof delta === 'number') {
+            history.go(delta);
+        } else if (direction === 'forward') {
+            history.forward();
+        } else {
+            history.back();
+        }
+
+        // Wait briefly for navigation to take effect
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        await emit('navigate-back-response', JSON.stringify({
+            success: true,
+            data: {
+                url: window.location.href,
+                title: document.title
+            }
+        }));
+    } catch (error) {
+        await emit('navigate-back-response', JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error)
+        }));
+    }
+}
+
+// --- scroll_page handler ---
+async function handleScrollPageRequest(event: any) {
+    console.log('TAURI-PLUGIN-MCP: Received scroll-page, payload:', event.payload);
+    try {
+        const { direction, amount, toRef, toTop, toBottom } = event.payload || {};
+
+        if (toTop) {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        } else if (toBottom) {
+            window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+        } else if (typeof toRef === 'number') {
+            const el = getElementByRef(toRef);
+            if (!el) {
+                throw new Error(`No element found with ref=${toRef}. Call get_page_map first.`);
+            }
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+            const vh = window.innerHeight;
+            let pixels: number;
+            if (typeof amount === 'number') {
+                pixels = amount;
+            } else if (amount === 'half') {
+                pixels = Math.round(vh / 2);
+            } else {
+                // default: "page"
+                pixels = vh;
+            }
+            if (direction === 'up') {
+                pixels = -pixels;
+            }
+            window.scrollBy({ top: pixels, behavior: 'smooth' });
+        }
+
+        // Wait for smooth scroll to settle
+        await new Promise(resolve => setTimeout(resolve, 350));
+
+        await emit('scroll-page-response', JSON.stringify({
+            success: true,
+            data: {
+                scrollPosition: { x: window.scrollX, y: window.scrollY },
+                pageHeight: document.documentElement.scrollHeight,
+                viewport: { width: window.innerWidth, height: window.innerHeight }
+            }
+        }));
+    } catch (error) {
+        await emit('scroll-page-response', JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error)
+        }));
+    }
+}
+
+// --- fill_form handler ---
+
+// Helper to resolve an element from a field entry (by ref or selector)
+function resolveElement(field: { ref?: number; selectorType?: string; selectorValue?: string }): Element | null {
+    if (typeof field.ref === 'number') {
+        return getElementByRef(field.ref);
+    }
+    if (field.selectorType && field.selectorValue) {
+        switch (field.selectorType) {
+            case 'id': return document.getElementById(field.selectorValue);
+            case 'class': return document.getElementsByClassName(field.selectorValue)[0] || null;
+            case 'css': return document.querySelector(field.selectorValue);
+            case 'tag': return document.getElementsByTagName(field.selectorValue)[0] || null;
+            case 'text': return findElementByText(field.selectorValue);
+            default: return null;
+        }
+    }
+    return null;
+}
+
+async function handleFillFormRequest(event: any) {
+    console.log('TAURI-PLUGIN-MCP: Received fill-form, payload:', event.payload);
+    try {
+        const { fields, submitRef } = event.payload || {};
+
+        if (!Array.isArray(fields) || fields.length === 0) {
+            throw new Error('fields array is required and must not be empty');
+        }
+
+        const results: Array<{ ref?: number; success: boolean; error?: string }> = [];
+
+        for (const field of fields) {
+            const entry: { ref?: number; success: boolean; error?: string } = { ref: field.ref, success: false };
+            try {
+                const el = resolveElement(field);
+                if (!el) {
+                    entry.error = `Element not found (ref=${field.ref}, selector=${field.selectorType}:${field.selectorValue})`;
+                    results.push(entry);
+                    continue;
+                }
+
+                const clear = field.clear !== false; // default true
+
+                if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+                    el.focus();
+                    if (clear) {
+                        el.value = '';
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                    // Use the existing simulateReactInputTyping for proper React compat
+                    await simulateReactInputTyping(el, field.value, 0);
+                } else if (el instanceof HTMLSelectElement) {
+                    el.focus();
+                    el.value = field.value;
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                } else if (el instanceof HTMLElement && el.isContentEditable) {
+                    el.focus();
+                    if (clear) {
+                        el.innerHTML = '';
+                        el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+                    }
+                    await typeIntoContentEditable(el, field.value, 0);
+                } else {
+                    entry.error = `Element <${el.tagName}> is not a form field`;
+                    results.push(entry);
+                    continue;
+                }
+
+                entry.success = true;
+            } catch (fieldError) {
+                entry.error = fieldError instanceof Error ? fieldError.message : String(fieldError);
+            }
+            results.push(entry);
+        }
+
+        // Optionally click submit button
+        let submitResult = null;
+        if (typeof submitRef === 'number') {
+            const submitEl = getElementByRef(submitRef);
+            if (submitEl && submitEl instanceof HTMLElement) {
+                submitEl.click();
+                submitResult = { clicked: true, tag: submitEl.tagName };
+            } else {
+                submitResult = { clicked: false, error: `Submit element ref=${submitRef} not found` };
+            }
+        }
+
+        await emit('fill-form-response', JSON.stringify({
+            success: true,
+            data: { fields: results, submit: submitResult }
+        }));
+    } catch (error) {
+        await emit('fill-form-response', JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error)
+        }));
+    }
+}
+
+// --- wait_for handler ---
+async function handleWaitForRequest(event: any) {
+    console.log('TAURI-PLUGIN-MCP: Received wait-for, payload:', event.payload);
+    try {
+        const { text, selector, ref: refNum, state = 'visible', timeoutMs = 10000 } = event.payload || {};
+        const pollInterval = 200;
+
+        const result = await new Promise<{ found: boolean; elapsed: number }>((resolve) => {
+            const startTime = Date.now();
+            let observer: MutationObserver | null = null;
+
+            function checkCondition(): boolean {
+                if (typeof text === 'string') {
+                    const bodyText = document.body?.innerText || '';
+                    const found = bodyText.includes(text);
+                    return state === 'hidden' ? !found : found;
+                }
+
+                let el: Element | null = null;
+                if (typeof refNum === 'number') {
+                    el = getElementByRef(refNum);
+                } else if (typeof selector === 'string') {
+                    el = document.querySelector(selector);
+                }
+
+                switch (state) {
+                    case 'attached':
+                        return el !== null;
+                    case 'detached':
+                        return el === null;
+                    case 'hidden':
+                        if (!el) return true;
+                        return !isElementVisible(el);
+                    case 'visible':
+                    default:
+                        if (!el) return false;
+                        return isElementVisible(el);
+                }
+            }
+
+            function finish(found: boolean) {
+                if (observer) observer.disconnect();
+                resolve({ found, elapsed: Date.now() - startTime });
+            }
+
+            // Check immediately
+            if (checkCondition()) {
+                finish(true);
+                return;
+            }
+
+            // Set up polling + MutationObserver
+            const interval = setInterval(() => {
+                if (checkCondition()) {
+                    clearInterval(interval);
+                    finish(true);
+                    return;
+                }
+                if (Date.now() - startTime >= timeoutMs) {
+                    clearInterval(interval);
+                    finish(false);
+                }
+            }, pollInterval);
+
+            observer = new MutationObserver(() => {
+                if (checkCondition()) {
+                    clearInterval(interval);
+                    finish(true);
+                }
+            });
+
+            observer.observe(document.body || document.documentElement, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                characterData: true,
+            });
+
+            // Hard timeout
+            setTimeout(() => {
+                clearInterval(interval);
+                finish(checkCondition());
+            }, timeoutMs);
+        });
+
+        await emit('wait-for-response', JSON.stringify({
+            success: true,
+            data: {
+                found: result.found,
+                elapsed: result.elapsed,
+                timedOut: !result.found
+            }
+        }));
+    } catch (error) {
+        await emit('wait-for-response', JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error)
+        }));
     }
 }

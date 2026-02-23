@@ -25,12 +25,14 @@ pub async fn handle_simulate_text_input<R: Runtime>(
                 success: true,
                 data: Some(data),
                 error: None,
+                id: None,
             })
         }
         Err(e) => Ok(SocketResponse {
             success: false,
             data: None,
             error: Some(e.to_string()),
+            id: None,
         }),
     }
 }

@@ -49,7 +49,7 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
     config: &PluginConfig,
 ) -> crate::Result<TauriMcp<R>> {
     let socket_server = if config.start_socket_server {
-        let mut server = SocketServer::new(app.clone(), config.socket_type.clone());
+        let mut server = SocketServer::new(app.clone(), config.socket_type.clone(), config.auth_token.clone());
         server.start()?;
         Some(Arc::new(Mutex::new(server)))
     } else {
@@ -341,10 +341,6 @@ impl<R: Runtime> McpInterface for TauriMcp<R> {
         &self,
         params: TextInputParams,
     ) -> std::result::Result<TextInputResult, String> {
-        // Create runtime for async code
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("Failed to create runtime: {}", e))?;
-
         // Convert shared params to internal type
         let request = TextInputRequest {
             text: params.text,
@@ -352,8 +348,9 @@ impl<R: Runtime> McpInterface for TauriMcp<R> {
             initial_delay_ms: params.initial_delay_ms,
         };
 
-        // Run async method
-        let result = rt.block_on(self.simulate_text_input_async(request));
+        // Run async method using existing Tokio runtime
+        let result = tokio::runtime::Handle::current()
+            .block_on(self.simulate_text_input_async(request));
 
         // Convert result to shared type
         match result {

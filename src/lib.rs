@@ -2,7 +2,7 @@ use tauri::{
     Manager, Runtime,
     plugin::{Builder, TauriPlugin},
 };
-use log::info;
+use log::{info, warn};
 
 pub use models::*;
 
@@ -73,6 +73,9 @@ pub struct PluginConfig {
     pub socket_type: SocketType,
     /// Whether to start the socket server automatically. Default is true.
     pub start_socket_server: bool,
+    /// Optional auth token for socket server authentication.
+    /// When set, clients must include this token in requests.
+    pub auth_token: Option<String>,
 }
 
 impl PluginConfig {
@@ -82,6 +85,7 @@ impl PluginConfig {
             application_name,
             socket_type: SocketType::default(),
             start_socket_server: true,
+            auth_token: None,
         }
     }
 
@@ -100,6 +104,12 @@ impl PluginConfig {
     /// Set whether to start the socket server automatically.
     pub fn start_socket_server(mut self, start: bool) -> Self {
         self.start_socket_server = start;
+        self
+    }
+
+    /// Set an auth token for socket server authentication.
+    pub fn auth_token(mut self, token: String) -> Self {
+        self.auth_token = Some(token);
         self
     }
 }
@@ -135,6 +145,10 @@ pub fn init_with_config<R: Runtime>(config: PluginConfig) -> TauriPlugin<R> {
         }
     }
 
+    if config.auth_token.is_none() {
+        warn!("[TAURI_MCP] WARNING: No auth token configured. Socket server is unauthenticated.");
+    }
+
     if config.start_socket_server {
         info!("[TAURI_MCP] Socket server will start automatically");
     } else {
@@ -148,7 +162,7 @@ pub fn init_with_config<R: Runtime>(config: PluginConfig) -> TauriPlugin<R> {
         .setup(move |app, api| {
             info!("[TAURI_MCP] Setting up plugin");
             #[cfg(mobile)]
-            panic!("Mobile is not supported");
+            return Err("Mobile is not supported".into());
             #[cfg(desktop)]
             let tauri_mcp = desktop::init(app, api, &config)?;
             app.manage(tauri_mcp);

@@ -5,10 +5,10 @@ import { socketClient } from "./client.js";
 export function registerSendTextToElementTool(server: McpServer) {
   server.tool(
     "send_text_to_element",
-    "Finds an HTML element by selector and sends text input to it, suitable for inputs, textareas, and contentEditable elements. Note: While this tool updates DOM content, it may not trigger React state updates in applications using React - visual changes appear but application state may not reflect the changes.",
+    "Finds a specific HTML element by selector and types text into it character-by-character, suitable for inputs, textareas, and contentEditable elements. Use selector_type 'ref' with a ref number from get_page_map for the most reliable targeting. Unlike simulate_text_input (which types into whatever is focused), this tool targets a specific element. Handles React controlled components, Lexical, and Slate editors.",
     {
-      selector_type: z.enum(["id", "class", "tag", "text"]).describe("The type of selector to use: 'id', 'class', 'tag', or 'text'."),
-      selector_value: z.string().describe("The value to search for based on the selector type."),
+      selector_type: z.enum(["ref", "id", "class", "tag", "text"]).describe("The type of selector to use. 'ref' uses a numbered reference from get_page_map (most reliable)."),
+      selector_value: z.string().describe("The value to search for based on the selector type. For 'ref', provide the ref number as a string."),
       text: z.string().describe("The text to input into the element."),
       window_label: z.string().default("main").describe("The identifier of the application window to search in. Defaults to 'main' if not specified."),
       delay_ms: z.number().default(20).describe("The delay between keystrokes in milliseconds (for realistic typing simulation). Default is 20ms."),

@@ -1,5 +1,5 @@
 use serde_json::Value;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Runtime};
 
 use crate::error::Error;
 use crate::models::MouseMovementRequest;

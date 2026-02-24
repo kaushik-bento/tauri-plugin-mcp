@@ -112,7 +112,6 @@ fn get_number_from_dict(dict: &core_foundation::dictionary::CFDictionary<core_fo
 fn get_bounds_from_dict(dict: &core_foundation::dictionary::CFDictionary<core_foundation::string::CFString, *const std::ffi::c_void>) -> (f64, f64, f64, f64) {
     use core_foundation::string::CFString;
     use core_foundation::dictionary::CFDictionary;
-    use core_foundation::number::CFNumber;
     use core_foundation::base::TCFType;
 
     let cf_key = CFString::new("kCGWindowBounds");

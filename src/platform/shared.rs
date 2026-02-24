@@ -24,16 +24,6 @@ where
     }
 }
 
-// Helper function to get window title - used by multiple platforms
-pub fn get_window_title<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<String> {
-    match window.title() {
-        Ok(title) => Ok(title),
-        Err(e) => Err(Error::WindowOperationFailed(format!(
-            "Failed to get window title: {}",
-            e
-        ))),
-    }
-}
 
 /// Finalize a screenshot capture: branches on save_to_disk/thumbnail params to produce the right response.
 pub fn finalize_screenshot(

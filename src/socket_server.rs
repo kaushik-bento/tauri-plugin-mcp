@@ -308,7 +308,7 @@ impl<R: Runtime> SocketServer<R> {
         let app = self.app.clone();
         let running = self.running.clone();
         let socket_type = self.socket_type.clone();
-        let rt_handle = tokio::runtime::Handle::current();
+        let rt_handle = tauri::async_runtime::handle().inner().clone();
         let auth_token: Option<Arc<str>> = self.auth_token.as_deref().map(Into::into);
 
         // Spawn a thread to handle socket connections

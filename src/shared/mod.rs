@@ -74,6 +74,8 @@ pub struct TextInputParams {
     pub text: String,
     pub delay_ms: Option<u64>,
     pub initial_delay_ms: Option<u64>,
+    #[serde(default)]
+    pub window_label: Option<String>,
 }
 
 // Text input result
@@ -95,6 +97,8 @@ pub struct MouseMovementParams {
     pub relative: Option<bool>,
     pub click: Option<bool>,
     pub button: Option<String>, // "left", "right", or "middle"
+    #[serde(default)]
+    pub window_label: Option<String>,
 }
 
 // Mouse movement result

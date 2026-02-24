@@ -4,7 +4,12 @@ import * as fs from 'fs';
 
 // Constants
 const SOCKET_FILENAME = 'tauri-mcp.sock';
-const DEFAULT_SOCKET_PATH = `${os.tmpdir()}/${SOCKET_FILENAME}`;
+// Use /tmp on Unix as a well-known default. The Tauri app and MCP server run as
+// separate processes with different TMPDIR values (e.g. GUI vs terminal on macOS),
+// so os.tmpdir() can't be relied on to match the Rust side.
+const DEFAULT_SOCKET_PATH = os.platform() === 'win32'
+  ? `${os.tmpdir()}\\${SOCKET_FILENAME}`
+  : `/tmp/${SOCKET_FILENAME}`;
 
 // Connection configuration types
 export interface IpcConfig {

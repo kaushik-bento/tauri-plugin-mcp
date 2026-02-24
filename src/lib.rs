@@ -16,6 +16,9 @@ mod socket_server;
 mod tools;
 // Platform-specific module
 mod platform;
+// Native input injection (replaces enigo)
+#[cfg(desktop)]
+mod native_input;
 
 pub use error::{Error, Result};
 pub use shared::{

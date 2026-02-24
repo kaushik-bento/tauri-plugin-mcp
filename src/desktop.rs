@@ -1,5 +1,6 @@
 use crate::error::Error;
 use crate::models::*;
+use crate::native_input::{self, TextParams};
 use crate::shared::{
     McpInterface, MouseMovementParams, MouseMovementResult, ScreenshotParams,
     ScreenshotResult as SharedScreenshotResult, TextInputParams, TextInputResult,
@@ -8,10 +9,8 @@ use crate::shared::{
 use crate::socket_server::SocketServer;
 use crate::tools::mouse_movement;
 use crate::{PluginConfig, Result};
-use enigo::{Enigo, Keyboard, Settings};
 use serde::de::DeserializeOwned;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, Runtime, plugin::PluginApi};
 use log::info;
@@ -208,6 +207,9 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
         label: config.default_webview_label.clone(),
     });
 
+    // Register virtual cursor state for native input injection
+    app.manage(crate::native_input::state::VirtualCursorState::new());
+
     let socket_server = if config.start_socket_server {
         let mut server = SocketServer::new(app.clone(), config.socket_type.clone(), config.auth_token.clone());
         server.start()?;
@@ -382,9 +384,7 @@ impl<R: Runtime> TauriMcp<R> {
         }
     }
 
-    // Text input simulation
-    // TODO: Wrap Enigo usage in tokio::task::spawn_blocking once Enigo is Send on all platforms.
-    // Currently Enigo is not Send on macOS (Cocoa APIs), so thread::sleep runs on the async executor.
+    // Text input simulation via native event injection (no Accessibility permissions needed)
     pub async fn simulate_text_input_async(
         &self,
         params: TextInputRequest,
@@ -392,37 +392,31 @@ impl<R: Runtime> TauriMcp<R> {
         let text = params.text;
         let delay_ms = params.delay_ms.unwrap_or(20);
         let initial_delay_ms = params.initial_delay_ms.unwrap_or(500);
+        let window_label = params.window_label.as_deref().unwrap_or("main");
 
-        // Create Enigo instance with the latest API
-        let mut enigo = Enigo::new(&Settings::default())
-            .map_err(|e| Error::Anyhow(format!("Failed to initialize Enigo: {}", e)))?;
+        // Resolve the webview for native event injection
+        let webview = get_webview_for_eval(&self.app, window_label)
+            .ok_or_else(|| Error::Anyhow(format!("Webview not found: {}", window_label)))?;
 
         // Initial delay before typing
         if initial_delay_ms > 0 {
-            thread::sleep(Duration::from_millis(initial_delay_ms));
+            tokio::time::sleep(Duration::from_millis(initial_delay_ms)).await;
         }
 
         let start_time = Instant::now();
 
-        // Use the text method from the Keyboard trait
-        if delay_ms == 0 {
-            // Fast typing (all at once)
-            Keyboard::text(&mut enigo, &text)
-                .map_err(|e| Error::Anyhow(format!("Failed to simulate text input: {}", e)))?;
-        } else {
-            // Slow typing with configurable delay
-            for c in text.chars() {
-                Keyboard::text(&mut enigo, &c.to_string())
-                    .map_err(|e| Error::Anyhow(format!("Failed to simulate text input: {}", e)))?;
+        let text_params = TextParams {
+            text: text.clone(),
+            delay_ms,
+        };
 
-                thread::sleep(Duration::from_millis(delay_ms));
-            }
-        }
+        let result = native_input::backend::inject_text(&webview, &text_params)
+            .map_err(|e| Error::Anyhow(format!("Native text injection failed: {}", e)))?;
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
 
         Ok(TextInputResponse {
-            chars_typed: text.chars().count() as u32,
+            chars_typed: result.chars_typed,
             duration_ms,
         })
     }
@@ -515,6 +509,7 @@ impl<R: Runtime> McpInterface for TauriMcp<R> {
             text: params.text,
             delay_ms: params.delay_ms,
             initial_delay_ms: params.initial_delay_ms,
+            window_label: params.window_label,
         };
 
         // Run async method using existing Tokio runtime

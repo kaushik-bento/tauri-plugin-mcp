@@ -10,6 +10,7 @@ export function registerTextInputTool(server: McpServer) {
       text: z.string().describe("Required. The string of text content to be typed out by the simulated keyboard input."),
       delay_ms: z.number().int().nonnegative().optional().describe("The delay in milliseconds between each simulated keystroke. Adjusts the typing speed."),
       initial_delay_ms: z.number().int().nonnegative().optional().describe("An initial delay in milliseconds before the simulation of typing begins. Useful for ensuring the target field is ready."),
+      window_label: z.string().optional().describe("The label of the target webview window. Defaults to 'main' if not specified."),
     },
     {
       title: "Simulate Keyboard Text Input into Focused Field",
@@ -18,7 +19,7 @@ export function registerTextInputTool(server: McpServer) {
       idempotentHint: false,
       openWorldHint: false,
     },
-    async ({ text, delay_ms, initial_delay_ms }) => {
+    async ({ text, delay_ms, initial_delay_ms, window_label }) => {
       try {
         // Validate required parameters
         if (!text) {
@@ -42,7 +43,8 @@ export function registerTextInputTool(server: McpServer) {
         await socketClient.sendCommand('simulate_text_input', {
           text,
           delay_ms,
-          initial_delay_ms
+          initial_delay_ms,
+          window_label
         });
         
         return {

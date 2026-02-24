@@ -7,11 +7,12 @@ export function registerMouseMovementTool(server: McpServer) {
     "simulate_mouse_movement",
     "Simulates the movement of the mouse cursor to specified screen coordinates, either absolute or relative to its current position. This action can trigger hover events or other UI interactions in the targeted application or operating system. Considered destructive as it can alter UI state or initiate actions.",
     {
-      x: z.number().int().describe("Required. The target X-coordinate for the mouse cursor, in screen pixels."),
-      y: z.number().int().describe("Required. The target Y-coordinate for the mouse cursor, in screen pixels."),
-      relative: z.boolean().optional().describe("If true, the x and y coordinates are treated as offsets relative to the mouse cursor's current position. If false (default), x and y are absolute screen coordinates."),
+      x: z.number().int().describe("Required. The target X-coordinate for the mouse cursor, in CSS pixels relative to the webview viewport."),
+      y: z.number().int().describe("Required. The target Y-coordinate for the mouse cursor, in CSS pixels relative to the webview viewport."),
+      relative: z.boolean().optional().describe("If true, the x and y coordinates are treated as offsets relative to the mouse cursor's current position. If false (default), x and y are absolute viewport coordinates."),
       click: z.boolean().optional().describe("If true, performs a mouse click at the target coordinates after movement. Default is false."),
       button: z.enum(["left", "right", "middle"]).optional().describe("Specifies which mouse button to click. Options are 'left', 'right', or 'middle'. Default is 'left'."),
+      window_label: z.string().optional().describe("The label of the target webview window. Defaults to 'main' if not specified."),
     },
     {
       title: "Simulate Mouse Cursor Movement",
@@ -20,7 +21,7 @@ export function registerMouseMovementTool(server: McpServer) {
       idempotentHint: false,
       openWorldHint: false,
     },
-    async ({ x, y, relative, click, button }) => {
+    async ({ x, y, relative, click, button, window_label }) => {
       try {
         // X and Y are required by the Zod schema, but let's validate they're numbers
         if (typeof x !== 'number' || typeof y !== 'number') {
@@ -48,7 +49,8 @@ export function registerMouseMovementTool(server: McpServer) {
           y,
           relative,
           click,
-          button
+          button,
+          window_label
         });
         
         const actionText = click 

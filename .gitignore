@@ -9,6 +9,7 @@ mcp-server-ts/build/
 dist-js/
 # TypeScript/JavaScript
 node_modules/
+package-lock.json
 dist/
 dist-ssr/
 *.local

@@ -3,15 +3,19 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { registerAllTools, initializeSocket } from "./tools/index.js";
 
 // Create server instance
-const server = new McpServer({
-  name: "tauri-mcp",
-  version: "1.0.0",
-  instructions: "Workflow: Start with query_page(mode='app_info') to discover the app. Use query_page(mode='map') for numbered refs, then click or type_text to interact. Use query_page(mode='state') for lightweight checks. Use navigate for URLs, manage_storage for localStorage/cookies, manage_window for window/zoom/devtools. Use execute_js as the universal escape hatch.",
-  capabilities: {
-    resources: {},
-    tools: {},
+const server = new McpServer(
+  {
+    name: "tauri-mcp",
+    version: "1.0.0",
   },
-});
+  {
+    instructions: "Workflow: Start with query_page(mode='app_info') to discover the app. Use query_page(mode='map') for numbered refs, then click or type_text to interact. Use query_page(mode='state') for lightweight checks. Use navigate for URLs, manage_storage for localStorage/cookies, manage_window for window/zoom/devtools. Use execute_js as the universal escape hatch.",
+    capabilities: {
+      resources: {},
+      tools: {},
+    },
+  }
+);
 
 async function main() {
   try {

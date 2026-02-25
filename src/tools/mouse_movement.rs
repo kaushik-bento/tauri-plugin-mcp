@@ -54,6 +54,8 @@ pub async fn simulate_mouse_movement_async<R: Runtime>(
         y: target_y,
         click,
         button,
+        mouse_down: params.mouse_down.unwrap_or(false),
+        mouse_up: params.mouse_up.unwrap_or(false),
     };
 
     let result = native_input::backend::inject_mouse(&webview, &mouse_params)
@@ -88,6 +90,8 @@ pub fn simulate_mouse_movement_shared<R: Runtime>(
         click: params.click,
         button: params.button,
         window_label: params.window_label,
+        mouse_down: params.mouse_down,
+        mouse_up: params.mouse_up,
     };
 
     // Run async method using existing Tokio runtime

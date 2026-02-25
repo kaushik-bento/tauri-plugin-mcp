@@ -47,6 +47,8 @@ pub struct MouseParams {
     pub y: i32,
     pub click: bool,
     pub button: MouseButton,
+    pub mouse_down: bool,
+    pub mouse_up: bool,
 }
 
 /// Parameters for text event injection

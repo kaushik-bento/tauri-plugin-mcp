@@ -230,7 +230,7 @@ pub struct TextInputRequest {
     pub text: String,
     pub delay_ms: Option<u64>,
     pub initial_delay_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default, alias = "window_label")]
     pub window_label: Option<String>,
 }
 
@@ -251,8 +251,12 @@ pub struct MouseMovementRequest {
     pub relative: Option<bool>,
     pub click: Option<bool>,
     pub button: Option<String>, // "left", "right", or "middle"
-    #[serde(default)]
+    #[serde(default, alias = "window_label")]
     pub window_label: Option<String>,
+    #[serde(default, alias = "mouse_down")]
+    pub mouse_down: Option<bool>,
+    #[serde(default, alias = "mouse_up")]
+    pub mouse_up: Option<bool>,
 }
 
 // Mouse movement response model

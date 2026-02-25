@@ -27,12 +27,13 @@ pub fn inject_mouse_via_js<R: Runtime>(
         x = x, y = y
     );
 
+    let button_num = match params.button {
+        MouseButton::Left => 0,
+        MouseButton::Right => 2,
+        MouseButton::Middle => 1,
+    };
+
     if params.click {
-        let button_num = match params.button {
-            MouseButton::Left => 0,
-            MouseButton::Right => 2,
-            MouseButton::Middle => 1,
-        };
         js.push_str(&format!(
             r#"
             el.dispatchEvent(new MouseEvent('mousedown', {{
@@ -50,6 +51,24 @@ pub fn inject_mouse_via_js<R: Runtime>(
 
         // Focus the element if it's focusable
         js.push_str("if (el.focus) { el.focus(); }\n");
+    } else if params.mouse_down {
+        js.push_str(&format!(
+            r#"
+            el.dispatchEvent(new MouseEvent('mousedown', {{
+                clientX: {x}, clientY: {y}, button: {btn}, bubbles: true, cancelable: true
+            }}));
+            "#,
+            x = x, y = y, btn = button_num
+        ));
+    } else if params.mouse_up {
+        js.push_str(&format!(
+            r#"
+            el.dispatchEvent(new MouseEvent('mouseup', {{
+                clientX: {x}, clientY: {y}, button: {btn}, bubbles: true, cancelable: true
+            }}));
+            "#,
+            x = x, y = y, btn = button_num
+        ));
     }
 
     js.push_str("})();");
@@ -78,29 +97,54 @@ pub fn inject_text_via_js<R: Runtime>(
         .replace('\n', "\\n")
         .replace('\r', "\\r");
 
-    let js = format!(
-        r#"(function() {{
+    let delay_ms = params.delay_ms;
+
+    // Use document.execCommand('insertText') for input/textarea elements.
+    // This triggers the browser's native input pipeline which produces a real
+    // InputEvent that React's controlled components recognize. Direct
+    // element.value assignment + synthetic Event('input') does NOT work
+    // because React's internal fiber value tracker never registers the change.
+    let js = if delay_ms > 0 {
+        // Paced typing: inject one character at a time with setTimeout delays
+        format!(
+            r#"(function() {{
+            var text = '{text}';
+            var delay = {delay};
+            function typeChar(i) {{
+                if (i >= text.length) return;
+                var el = document.activeElement;
+                if (!el) return;
+                var ch = text[i];
+                if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {{
+                    document.execCommand('insertText', false, ch);
+                }} else if (el.isContentEditable) {{
+                    document.execCommand('insertText', false, ch);
+                }} else {{
+                    el.dispatchEvent(new KeyboardEvent('keydown', {{
+                        key: ch, code: 'Key' + ch.toUpperCase(), bubbles: true
+                    }}));
+                    el.dispatchEvent(new KeyboardEvent('keypress', {{
+                        key: ch, code: 'Key' + ch.toUpperCase(), bubbles: true
+                    }}));
+                    el.dispatchEvent(new KeyboardEvent('keyup', {{
+                        key: ch, code: 'Key' + ch.toUpperCase(), bubbles: true
+                    }}));
+                }}
+                setTimeout(function() {{ typeChar(i + 1); }}, delay);
+            }}
+            typeChar(0);
+        }})();"#,
+            text = text_escaped, delay = delay_ms
+        )
+    } else {
+        // Immediate: inject all text at once
+        format!(
+            r#"(function() {{
             var text = '{text}';
             var el = document.activeElement;
             if (!el) return;
 
-            // For input/textarea elements
-            if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {{
-                // Try React-compatible value setter
-                var nativeSetter = Object.getOwnPropertyDescriptor(
-                    window.HTMLInputElement.prototype, 'value'
-                ) || Object.getOwnPropertyDescriptor(
-                    window.HTMLTextAreaElement.prototype, 'value'
-                );
-                if (nativeSetter && nativeSetter.set) {{
-                    nativeSetter.set.call(el, el.value + text);
-                }} else {{
-                    el.value += text;
-                }}
-                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            }} else if (el.isContentEditable) {{
-                // For contenteditable elements
+            if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) {{
                 document.execCommand('insertText', false, text);
             }} else {{
                 // Generic fallback: try typing via keyboard events
@@ -118,12 +162,23 @@ pub fn inject_text_via_js<R: Runtime>(
                 }}
             }}
         }})();"#,
-        text = text_escaped
-    );
+            text = text_escaped
+        )
+    };
 
     webview.eval(&js).map_err(|e| {
         Error::Anyhow(format!("Failed to inject text via JS: {}", e))
     })?;
+
+    // Block until paced typing completes to match macOS backend's synchronous behavior.
+    // The JS uses setTimeout chains, so webview.eval() returns immediately.
+    if delay_ms > 0 {
+        let chars_count = params.text.chars().count() as u64;
+        if chars_count > 1 {
+            let total_ms = delay_ms * (chars_count - 1) + 50;
+            std::thread::sleep(std::time::Duration::from_millis(total_ms));
+        }
+    }
 
     let chars_typed = params.text.chars().count() as u32;
     Ok(TextResult {

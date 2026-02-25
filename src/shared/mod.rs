@@ -99,6 +99,10 @@ pub struct MouseMovementParams {
     pub button: Option<String>, // "left", "right", or "middle"
     #[serde(default)]
     pub window_label: Option<String>,
+    #[serde(default)]
+    pub mouse_down: Option<bool>,
+    #[serde(default)]
+    pub mouse_up: Option<bool>,
 }
 
 // Mouse movement result

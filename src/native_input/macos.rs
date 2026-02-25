@@ -255,6 +255,8 @@ pub fn inject_mouse<R: Runtime>(
     let y = params.y;
     let click = params.click;
     let button = params.button;
+    let mouse_down = params.mouse_down;
+    let mouse_up = params.mouse_up;
 
     let (tx, rx) = mpsc::channel();
 
@@ -293,6 +295,20 @@ pub fn inject_mouse<R: Runtime>(
                     };
 
                     send_mouse_event(down_type, ns_point, window_number, 1, 1.0);
+                    send_mouse_event(up_type, ns_point, window_number, 1, 0.0);
+                } else if mouse_down {
+                    let down_type = match button {
+                        MouseButton::Left => NS_LEFT_MOUSE_DOWN,
+                        MouseButton::Right => NS_RIGHT_MOUSE_DOWN,
+                        MouseButton::Middle => NS_OTHER_MOUSE_DOWN,
+                    };
+                    send_mouse_event(down_type, ns_point, window_number, 1, 1.0);
+                } else if mouse_up {
+                    let up_type = match button {
+                        MouseButton::Left => NS_LEFT_MOUSE_UP,
+                        MouseButton::Right => NS_RIGHT_MOUSE_UP,
+                        MouseButton::Middle => NS_OTHER_MOUSE_UP,
+                    };
                     send_mouse_event(up_type, ns_point, window_number, 1, 0.0);
                 }
 

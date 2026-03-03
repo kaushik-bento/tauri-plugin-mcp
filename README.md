@@ -20,14 +20,14 @@ Forked from [P3GLEG/tauri-plugin-mcp](https://github.com/P3GLEG/tauri-plugin-mcp
 
 ### npm (guest-js bindings)
 ```bash
-npm install @bento/automate-tauri-desktop-app
+npm install @bentolabs/automate-tauri-desktop-app
 ```
 
 ### MCP Server CLI
 ```bash
-npm install -g @bento/automate-tauri-desktop-app-server
+npm install -g @bentolabs/automate-tauri-desktop-app-server
 # or run directly
-npx @bento/automate-tauri-desktop-app-server
+npx @bentolabs/automate-tauri-desktop-app-server
 ```
 
 ### Rust (Cargo)
@@ -77,7 +77,7 @@ Only include in development builds:
 ### 2. Import guest-js (auto-initializes)
 
 ```ts
-import '@bento/automate-tauri-desktop-app';
+import '@bentolabs/automate-tauri-desktop-app';
 // Listeners register automatically on import — no setup call needed.
 // HMR is handled automatically if using Vite.
 ```
@@ -91,7 +91,7 @@ import '@bento/automate-tauri-desktop-app';
   "mcpServers": {
     "tauri-mcp": {
       "command": "npx",
-      "args": ["@bento/automate-tauri-desktop-app-server"]
+      "args": ["@bentolabs/automate-tauri-desktop-app-server"]
     }
   }
 }
@@ -103,7 +103,7 @@ Custom socket path:
   "mcpServers": {
     "tauri-mcp": {
       "command": "npx",
-      "args": ["@bento/automate-tauri-desktop-app-server"],
+      "args": ["@bentolabs/automate-tauri-desktop-app-server"],
       "env": {
         "TAURI_MCP_IPC_PATH": "/custom/path/to/socket"
       }
@@ -121,7 +121,7 @@ For Docker, remote debugging, or when IPC doesn't work:
   "mcpServers": {
     "tauri-mcp": {
       "command": "npx",
-      "args": ["@bento/automate-tauri-desktop-app-server"],
+      "args": ["@bentolabs/automate-tauri-desktop-app-server"],
       "env": {
         "TAURI_MCP_CONNECTION_TYPE": "tcp",
         "TAURI_MCP_TCP_HOST": "127.0.0.1",
@@ -149,7 +149,7 @@ npm install && npm run build
 ```
 AI Agent (Claude Code, Cursor, etc.)
     ↕ MCP protocol (stdio)
-MCP Server (@bento/automate-tauri-desktop-app-server)
+MCP Server (@bentolabs/automate-tauri-desktop-app-server)
     ↕ IPC socket or TCP
 Tauri Plugin (Rust)
     ↕ Tauri events with correlation IDs
@@ -180,7 +180,7 @@ Your Application
 
 4. **Testing your setup:**
    ```bash
-   npx @modelcontextprotocol/inspector npx @bento/automate-tauri-desktop-app-server
+   npx @modelcontextprotocol/inspector npx @bentolabs/automate-tauri-desktop-app-server
    ```
 
 ## License

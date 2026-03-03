@@ -1,5 +1,5 @@
 {
-  "name": "@bento/automate-tauri-desktop-app-server",
+  "name": "@bentolabs/automate-tauri-desktop-app-server",
   "version": "0.2.0",
   "main": "index.js",
   "scripts": {

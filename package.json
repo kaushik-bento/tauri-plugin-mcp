@@ -1,7 +1,7 @@
 {
-  "name": "tauri-plugin-mcp",
-  "version": "0.1.0",
-  "author": "Pegleg",
+  "name": "@bento/automate-tauri-desktop-app",
+  "version": "0.2.0",
+  "author": "Bento",
   "description": "",
   "type": "module",
   "types": "./dist-js/index.d.ts",

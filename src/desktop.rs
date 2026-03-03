@@ -110,6 +110,13 @@ impl<R: Runtime> WindowHandle<R> {
             WindowHandle::Window(w) => w.is_fullscreen(),
         }
     }
+
+    pub fn is_maximized(&self) -> std::result::Result<bool, tauri::Error> {
+        match self {
+            WindowHandle::WebviewWindow(w) => w.is_maximized(),
+            WindowHandle::Window(w) => w.is_maximized(),
+        }
+    }
 }
 
 /// Get a window handle by label, supporting both WebviewWindow and Window architectures.
@@ -161,6 +168,19 @@ pub fn get_emit_target<R: Runtime>(app: &AppHandle<R>, window_label: &str) -> St
         }
     }
     window_label.to_string()
+}
+
+// ----- Focus Utilities -----
+
+/// Bring the target window to front and wait for the render to settle.
+/// Used before interactive tools (click, type, scroll) that require focus.
+pub async fn ensure_window_focus<R: Runtime>(app: &AppHandle<R>, window_label: &str) {
+    if let Some(handle) = get_window_handle(app, window_label) {
+        let _ = handle.show();
+        let _ = handle.set_focus();
+        // Give macOS time to bring the window to front and render
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 // ----- Screenshot Utilities -----
@@ -246,6 +266,22 @@ impl<R: Runtime> TauriMcp<R> {
         let window_handle = get_window_handle(&self.app, &window_label)
             .ok_or_else(|| Error::WindowNotFound(window_label.clone()))?;
 
+        // If the window is fullscreen or maximized, temporarily unmaximize so that
+        // CGWindowListCreateImage can capture the actual content (macOS does not
+        // composite fullscreen windows into the normal window list).
+        let was_fullscreen = window_handle.is_fullscreen().unwrap_or(false);
+        let was_maximized = window_handle.is_maximized().unwrap_or(false);
+
+        if was_fullscreen {
+            info!("[TAURI_MCP] Window is fullscreen — temporarily exiting for screenshot");
+            let _ = window_handle.set_fullscreen(false);
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        } else if was_maximized {
+            info!("[TAURI_MCP] Window is maximized — temporarily unmaximizing for screenshot");
+            let _ = window_handle.unmaximize();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
         // Create shared parameters struct from the request
         let params = ScreenshotParams {
             window_label: Some(window_label),
@@ -266,7 +302,20 @@ impl<R: Runtime> TauriMcp<R> {
         info!("[TAURI_MCP] Taking screenshot with default parameters");
 
         // Use platform-specific implementation to capture the window
-        crate::platform::current::take_screenshot(params, window_context).await
+        let result = crate::platform::current::take_screenshot(params, window_context).await;
+
+        // Restore fullscreen/maximized state after capture
+        if was_fullscreen {
+            if let Some(handle) = get_window_handle(&self.app, &payload.window_label) {
+                let _ = handle.set_fullscreen(true);
+            }
+        } else if was_maximized {
+            if let Some(handle) = get_window_handle(&self.app, &payload.window_label) {
+                let _ = handle.maximize();
+            }
+        }
+
+        result
     }
 
     // Add async method to perform window operations
@@ -393,6 +442,9 @@ impl<R: Runtime> TauriMcp<R> {
         // Resolve the webview for native event injection
         let webview = get_webview_for_eval(&self.app, window_label)
             .ok_or_else(|| Error::Anyhow(format!("Webview not found: {}", window_label)))?;
+
+        // Ensure window is focused before injecting text events
+        ensure_window_focus(&self.app, window_label).await;
 
         // Initial delay before typing
         if initial_delay_ms > 0 {

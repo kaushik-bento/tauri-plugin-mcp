@@ -4,7 +4,8 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc"
+    "build": "tsc",
+    "postbuild": "echo '#!/usr/bin/env node' | cat - build/index.js > build/index.js.tmp && mv build/index.js.tmp build/index.js && chmod +x build/index.js"
   },
   "keywords": [],
   "author": "Pegleg",

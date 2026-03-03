@@ -46,6 +46,9 @@ pub async fn simulate_mouse_movement_async<R: Runtime>(
         target_x, target_y, click, button
     );
 
+    // Ensure window is focused before injecting mouse events
+    crate::desktop::ensure_window_focus(app, window_label).await;
+
     let start_time = Instant::now();
 
     let mouse_params = MouseParams {

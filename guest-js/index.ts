@@ -935,7 +935,7 @@ function getPageMap(options?: PageMapOptions): PageMapResult {
     const interactiveOnly = options?.interactiveOnly === true;
     const includeContent = interactiveOnly ? false : (options?.includeContent !== false);
     const includeMetadata = options?.includeMetadata !== false;
-    const maxDepth = typeof options?.maxDepth === 'number' ? options.maxDepth : Infinity;
+    const maxDepth = typeof options?.maxDepth === 'number' ? options.maxDepth : 30;
     const isDelta = options?.delta === true;
     const scopeSelector = options?.scopeSelector;
 
@@ -988,10 +988,17 @@ function getPageMap(options?: PageMapOptions): PageMapResult {
         return false;
     }
 
+    // Budget limits to prevent runaway DOM walks on huge pages
+    const MAX_ELEMENTS = 500;
+    const MAX_NODES_VISITED = 10000;
+
     // Track walk stats for diagnostics
     let nodesVisited = 0;
 
     function walkNode(node: Node, depth: number, contextStack: string[], parentRefNum: number | null, hiddenAncestor: boolean = false) {
+        // Budget guards
+        if (nodesVisited >= MAX_NODES_VISITED) return;
+        if (elements.length >= MAX_ELEMENTS) return;
         nodesVisited++;
         // Depth guard: stop recursing deeper than maxDepth
         if (depth > maxDepth) return;
@@ -1092,8 +1099,12 @@ function getPageMap(options?: PageMapOptions): PageMapResult {
     if (scopeSelector) {
         const selectors = Array.isArray(scopeSelector) ? scopeSelector : [scopeSelector];
         for (const sel of selectors) {
-            const el = document.querySelector(sel);
-            if (el) roots.push(el);
+            try {
+                const matches = document.querySelectorAll(sel);
+                matches.forEach(el => roots.push(el));
+            } catch (e) {
+                console.warn(`TAURI-PLUGIN-MCP: Invalid scope selector "${sel}":`, e);
+            }
         }
     }
     if (roots.length === 0) {
@@ -1933,9 +1944,47 @@ async function handleNavigateBackRequest(event: any) {
 }
 
 // --- scroll_page handler ---
+
+// Wait for scroll to finish by polling scrollY until stable for 150ms (max 1s)
+function waitForScrollEnd(): Promise<void> {
+    return new Promise(resolve => {
+        let lastY = window.scrollY;
+        let stableTime = 0;
+        const POLL_MS = 50;
+        const STABLE_MS = 150;
+        const MAX_MS = 1000;
+        let elapsed = 0;
+        const interval = setInterval(() => {
+            elapsed += POLL_MS;
+            const currentY = window.scrollY;
+            if (currentY === lastY) {
+                stableTime += POLL_MS;
+            } else {
+                stableTime = 0;
+                lastY = currentY;
+            }
+            if (stableTime >= STABLE_MS || elapsed >= MAX_MS) {
+                clearInterval(interval);
+                resolve();
+            }
+        }, POLL_MS);
+    });
+}
+
 async function handleScrollPageRequest(event: any) {
     console.log('TAURI-PLUGIN-MCP: Received scroll-page, payload:', event.payload);
     const correlationId = getCorrelationId(event.payload);
+
+    // Dedup guard: skip if this correlation ID was already handled
+    if (correlationId && _handledCorrelationIds.has(correlationId)) {
+        console.warn('TAURI-PLUGIN-MCP: Ignoring duplicate scroll-page for correlation ID:', correlationId);
+        return;
+    }
+    if (correlationId) {
+        _handledCorrelationIds.add(correlationId);
+        setTimeout(() => _handledCorrelationIds.delete(correlationId), 30000);
+    }
+
     try {
         const { direction, amount, toRef, toTop, toBottom } = event.payload || {};
 
@@ -1966,8 +2015,8 @@ async function handleScrollPageRequest(event: any) {
             window.scrollBy({ top: pixels, behavior: 'smooth' });
         }
 
-        // Wait for smooth scroll to settle
-        await new Promise(resolve => setTimeout(resolve, 350));
+        // Wait for smooth scroll to settle (adaptive, not fixed timeout)
+        await waitForScrollEnd();
 
         await emitResponse('scroll-page-response', correlationId, JSON.stringify({
             success: true,
@@ -2388,4 +2437,18 @@ async function handleManageZoomRequest(event: any) {
             error: error instanceof Error ? error.message : String(error)
         }));
     }
+}
+
+// --- Auto-initialization (Issue 2) ---
+// Automatically set up plugin listeners on import so consumers don't need to call setupPluginListeners() manually.
+setupPluginListeners().catch(err =>
+    console.error('TAURI-PLUGIN-MCP: Auto-initialization failed:', err));
+
+// --- HMR support (Issue 8) ---
+// Clean up and re-register listeners on Vite/Webpack HMR to prevent stale handlers.
+if (typeof import.meta !== 'undefined' && (import.meta as any).hot) {
+    (import.meta as any).hot.dispose(() => cleanupPluginListeners());
+    (import.meta as any).hot.accept(() => {
+        setupPluginListeners().catch(console.error);
+    });
 }

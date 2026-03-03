@@ -526,6 +526,9 @@ pub async fn handle_scroll_page<R: Runtime>(
         crate::error::Error::Anyhow(format!("Webview not found: {}", window_label))
     })?;
 
+    // Ensure window is focused before scrolling (interactive operation)
+    crate::desktop::ensure_window_focus(app, &window_label).await;
+
     let emit_target = get_emit_target(app, &window_label);
 
     let js_payload = serde_json::json!({

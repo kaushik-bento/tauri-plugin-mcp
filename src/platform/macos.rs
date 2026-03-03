@@ -5,6 +5,7 @@ use log::{debug, info, error};
 use tauri::Runtime;
 use core_graphics::display::{
     CGWindowListCopyWindowInfo, kCGWindowListOptionAll, kCGWindowListExcludeDesktopElements,
+    kCGWindowListOptionIncludingWindow,
     kCGNullWindowID, CGWindowListCreateImage, CGRect, CGPoint, CGSize,
     kCGWindowImageDefault, kCGWindowImageBoundsIgnoreFraming,
 };
@@ -132,8 +133,29 @@ fn get_bounds_from_dict(dict: &core_foundation::dictionary::CFDictionary<core_fo
     }
 }
 
-/// Capture a window by its CGWindowID
-fn capture_window_by_id(window_id: u32, bounds: (f64, f64, f64, f64)) -> Result<image::RgbaImage> {
+/// Check if an image is mostly black (>95% of pixels have all RGB channels < 10).
+/// Returns true if the image appears to be a black/empty capture.
+fn is_mostly_black(image: &image::RgbaImage) -> bool {
+    let total_pixels = (image.width() as u64) * (image.height() as u64);
+    if total_pixels == 0 {
+        return true;
+    }
+    // Sample every 4th pixel for performance on large images
+    let mut black_count: u64 = 0;
+    let mut sampled: u64 = 0;
+    for (i, pixel) in image.pixels().enumerate() {
+        if i % 4 != 0 { continue; }
+        sampled += 1;
+        if pixel[0] < 10 && pixel[1] < 10 && pixel[2] < 10 {
+            black_count += 1;
+        }
+    }
+    if sampled == 0 { return true; }
+    (black_count as f64 / sampled as f64) > 0.95
+}
+
+/// Raw capture helper — captures a window image by CGWindowID using the given list option.
+fn capture_window_raw(window_id: u32, bounds: (f64, f64, f64, f64), list_option: u32) -> Result<image::RgbaImage> {
     use foreign_types_shared::ForeignType;
 
     let (x, y, width, height) = bounds;
@@ -146,7 +168,7 @@ fn capture_window_by_id(window_id: u32, bounds: (f64, f64, f64, f64)) -> Result<
     unsafe {
         let image_ref = CGWindowListCreateImage(
             rect,
-            kCGWindowListOptionAll,
+            list_option,
             window_id,
             kCGWindowImageDefault | kCGWindowImageBoundsIgnoreFraming,
         );
@@ -187,6 +209,23 @@ fn capture_window_by_id(window_id: u32, bounds: (f64, f64, f64, f64)) -> Result<
         image::RgbaImage::from_raw(img_width as u32, img_height as u32, rgba_data)
             .ok_or_else(|| Error::WindowOperationFailed("Failed to create image from raw data".to_string()))
     }
+}
+
+/// Capture a window by its CGWindowID.
+/// Uses kCGWindowListOptionIncludingWindow to capture the specific window without
+/// requiring it to be focused. Falls back to kCGWindowListOptionAll if the result
+/// is a black image (can happen with fullscreen/composited windows).
+fn capture_window_by_id(window_id: u32, bounds: (f64, f64, f64, f64)) -> Result<image::RgbaImage> {
+    // First try: capture just this window (no focus steal)
+    let image = capture_window_raw(window_id, bounds, kCGWindowListOptionIncludingWindow)?;
+
+    if !is_mostly_black(&image) {
+        return Ok(image);
+    }
+
+    info!("[TAURI-MCP] Smart capture returned mostly-black image, falling back to kCGWindowListOptionAll");
+    // Fallback: use kCGWindowListOptionAll which composites from the screen
+    capture_window_raw(window_id, bounds, kCGWindowListOptionAll)
 }
 
 // macOS-specific implementation for taking screenshots
